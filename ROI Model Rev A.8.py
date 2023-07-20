@@ -213,8 +213,9 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
                     current_time += 1
                 else:
                     if num_chargers == len(available_chargers) and ess.soc < kwh_size * 0.8:
-                        ess, time_to_charge = recharge_ess(ess, chargers, current_time)
+                        ess, time_to_charge, next_vehicle = recharge_ess(ess, chargers, current_time)
                         current_time += time_to_charge
+                        vehicle_index += next_vehicle
             # POSSIBLY ADD GRADUAL CHARGING OF ESS AS TIME PASSES
             soc[int(current_time)] = ess.soc
         total_charging_times += np.sum(charging_times)
