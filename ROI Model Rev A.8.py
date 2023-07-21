@@ -44,6 +44,25 @@ class EnergyStorageSystem:
             else:
                 self.energy_drawn["off_peak"] += potential_recharge
         return current_time
+    def recharge_by_duration(self, duration, soc, current_time):
+        # write condition to always round up current_time by 1
+        #TODO : introduce condition^^^
+        kwh_gained = self.grid_connection_power * duration
+        cost_to_recharge = self.grid_energy_cost * kwh_gained
+        soc_increase = kwh_gained / (self.kwh_size * 0.8)
+        self.soc = self.kwh_size * 0.8 if soc_increase > 1 else self.soc + kwh_gained
+        index = int(current_time + 1)
+        actual_increase_per_hour = 0
+        for _ in range(index):
+            if kwh_gained > self.grid_connection_power:
+                actual_increase_per_hour = kwh_gained - self.grid_connection_power
+                kwh_gained-= actual_increase_per_hour
+            else:
+                actual_increase_per_hour = kwh_gained
+
+            soc[index] = soc[index-1] + actual_increase_per_hour
+
+        return cost_to_recharge
 
     def get_grid_price(self, current_time, off_peak_cost, mid_peak_cost, on_peak_cost):
         if 7 <= current_time < 11 or 17 <= current_time < 19:
@@ -65,9 +84,23 @@ class EnergyStorageSystem:
             self.grid_charged_vehicles += 1
         return charger.busy_until, charging_time
 
-def recharge_ess():
-    #TODO: f
-    pass
+
+def get_busiest_charger(chargers):
+    busiest = chargers[0]
+    for charger in chargers:
+        if charger.busy_until > busiest.busy_until:
+            busiest = charger
+    return busiest
+def get_freest_charger(chargers):
+    busiest = chargers[0]
+    for charger in chargers:
+        if charger.busy_until < busiest.busy_until:
+            busiest = charger
+    return charger
+def next_arrival(size, arrival_times, curr_car):
+    if curr_car >= size:
+        return True,25
+    return False, arrival_times[curr_car]
 
 def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
                  energy_cost_increase, ev_charging_price_increase, demand_charge_increase, demand_charge_start,
@@ -121,9 +154,9 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
     # vehicle_count = int(input("Enter the number of vehicles: "))
     # grid_connection_power = int(input("Enter the grid connection power (kW): "))
     # gap_time = int(input("Enter the gap time (minutes): ")) / 60  # converted to hours
-    vehicle_count = 30
+    vehicle_count = 40
     grid_connection_power = 50
-    gap_time = 10
+    gap_time = 0.167
 
     ess = EnergyStorageSystem(kwh_size, chargers, total_cost)
     ess.grid_connection_power = grid_connection_power
@@ -140,6 +173,9 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
     total_charging_times = 0
     cash_flow_values = []
     annual_EV_charging_revenue_map = {}
+    annual_energy_costs = {}
+    annual_ess_costs = {}
+    annual_d2g_costs = {}
 
     while current_year < years + 1:
         # MODIFIED, reset chargers busy times for each year
@@ -151,17 +187,22 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
         soc = np.zeros(25)
 
         charging_times = np.zeros(24)
-        current_time = 0
         vehicle_index = 0
         total_charging_time = 0
         total_ev_charging_energy = 0
-
-        arrival_adjustment = vehicle_count % 2
-        morning_times = np.random.normal(loc=8, scale=1, size=vehicle_count // 2)
-        evening_times = np.random.normal(loc=18, scale=1, size=vehicle_count // 2 + arrival_adjustment)
-        arrival_times = np.concatenate([morning_times, evening_times])
+        charging_time= 0
+        charging_time_from_grid = 0
+        total_charging_per_year_grid = 0
+        total_charging_per_year = 0
+        arrival_adjustment = vehicle_count % 4
+        early_morning_times = np.random.normal(loc=4, scale=1, size=vehicle_count // 4)
+        morning_times = np.random.normal(loc=8, scale=1, size=vehicle_count // 4)
+        evening_times = np.random.normal(loc=18, scale=1, size=vehicle_count // 4 + arrival_adjustment)
+        late_evening_times = np.random.normal(loc=24, scale=1, size=vehicle_count // 4 + arrival_adjustment)
+        arrival_times = np.concatenate([early_morning_times, morning_times,evening_times, late_evening_times])
         arrival_times = (arrival_times + 24) % 24  # wrap around to 0-24 hours
         arrival_times.sort()
+        current_time = arrival_times[0]
 
         while current_time <= 24 and total_charging_time < 24:
             # MODIFIED, in case arrived vehicles are all iterated but the current time is less than 24
@@ -169,6 +210,13 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
                 # MODIFIED, for every arriving car, retrieve the list of available chargers using exact busy times
                 available_chargers = [charger for charger in ess.chargers if
                                       charger.busy_until <= arrival_times[vehicle_index]]
+
+                if num_chargers == len(available_chargers) and ess.soc < kwh_size * 0.8:
+                    last_avail_charge = get_busiest_charger(chargers).busy_until
+                    next_charge = arrival_times[vehicle_index]
+                    time_to_charge = next_charge - last_avail_charge
+                    cost_to_recharge, soc = ess.recharge_by_duration(time_to_charge, soc, current_time)
+
                 if arrival_times[vehicle_index] <= current_time:
                     # MODIFIED, no matter having available charger or not, increment vehicle index by 1
                     if available_chargers:
@@ -177,20 +225,26 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
 
                         # MODIFIED, time of finishing charging should not be over 24
                         if arrival_times[vehicle_index] + charging_time > 24:
+                            current_time = 25
                             # If charging this vehicle would make the total charging time exceed 24 hours, skip it.
                             break
                         if total_charging_time + charging_time > 24:
                             # If charging this vehicle would make the total charging time exceed 24 hours, skip it.
+                            current_time = 25
                             break
-
-                        total_charging_time += charging_time
-                        charger.busy_until = arrival_times[vehicle_index] + charging_time + gap_time  # Update the time until which the charger will be busy
 
                         if ess.soc >= 45:
                             ess.soc -= 45  # Decrease the SOC of the ESS
                             # MODIFIED, get energy drawn from grid to ess, assuming charging cars by ess always cost off-peak rate
-                            ess.energy_drawn["off_peak"] += 45
+                            if 7 <= current_time < 11 or 17 <= current_time < 19:
+                                ess.energy_drawn["mid_peak"] += 45
+                            elif 11 <= current_time < 17:
+                                ess.energy_drawn["on_peak"] += 45
+                            else:
+                                ess.energy_drawn["off_peak"] += 45
                             ess.ess_charged_vehicles += 1
+                            charger.busy_until = arrival_times[vehicle_index] + charging_time + gap_time  # Update the time until which the charger will be busy
+                            total_charging_time += charging_time
                         else:
                             # MODIFIED, get energy drawn directly from grid to vehicle
                             if 7 <= current_time < 11 or 17 <= current_time < 19:
@@ -200,6 +254,7 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
                             else:
                                 ess.energy_drawn["off_peak"] += 45
                             charging_time_from_grid = 45 / grid_connection_power
+                            total_charging_time += charging_time_from_grid
                             # MODIFIED, already done checking before
                             # if current_time + charging_time_from_grid + gap_time > 24:
                             #     break  # If charging this vehicle from the grid exceeds the available time, skip it.
@@ -207,18 +262,16 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
                                                                             on_peak_cost)  # Add the cost of charging from the grid
                             charger.busy_until = current_time + charging_time_from_grid + gap_time  # Update the time until which the charger will be busy
                             ess.grid_charged_vehicles += 1
+                        charging_times[int(np.round(current_time))] += 1
+                vehicle_index += 1  # Move to the next vehicle
+                out_of_range, current_time = next_arrival(len(arrival_times), arrival_times, vehicle_index)
+                if out_of_range:
+                    break
 
-                        charging_times[int(np.round(current_time))] += 1  # increment the charging_times at the current hour
-                    vehicle_index += 1  # Move to the next vehicle
-                    current_time += 1
-                else:
-                    if num_chargers == len(available_chargers) and ess.soc < kwh_size * 0.8:
-                        ess, time_to_charge, next_vehicle = recharge_ess(ess, chargers, current_time)
-                        current_time += time_to_charge
-                        vehicle_index += next_vehicle
+
             # POSSIBLY ADD GRADUAL CHARGING OF ESS AS TIME PASSES
-            soc[int(current_time)] = ess.soc
-        total_charging_times += np.sum(charging_times)
+                soc[int(current_time)] = ess.soc
+        total_charging_times += total_charging_time
 
         off_peak_cost_total = ess.energy_drawn["off_peak"] * off_peak_cost
         mid_peak_cost_total = ess.energy_drawn["mid_peak"] * mid_peak_cost
@@ -253,28 +306,31 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
         # daily car charged * 7 * 4 * 12 to be yearly number of cars charged, already increment for X years
         ess.ess_charged_vehicles = ess.ess_charged_vehicles * 7 * 4 * 12
         ess.grid_charged_vehicles = ess.grid_charged_vehicles * 7 * 4 * 12
-        total_charging_times = total_charging_times * 7 * 4 * 12
-        energy_cost_total = np.array(energy_cost_total)
-        d2g_demand_charge_total = np.array(d2g_demand_charge_total)
-        ess_demand_charge_total = np.array(ess_demand_charge_total)
-        ev_charging_revenue_total = np.array(ev_charging_revenue_total)
+        total_charging_times += total_charging_time * 7 * 4 * 12
+        # energy_cost_total = np.array(energy_cost_total)
+        # d2g_demand_charge_total = np.array(d2g_demand_charge_total)
+        # ess_demand_charge_total = np.array(ess_demand_charge_total)
+        # ev_charging_revenue_total = np.array(ev_charging_revenue_total)
 
         # MODIFIED: changed annual data calculation
-        monthly_energy_cost = energy_cost_total * 7 * 4
+        monthly_energy_cost = energy_cost_total[current_year-2] * 7 * 4
         annual_energy_cost = monthly_energy_cost * 12
-        monthly_d2g_cost = d2g_demand_charge_total
-        monthly_ess_cost = ess_demand_charge_total
+        monthly_d2g_cost = d2g_demand_charge_total[current_year-2]
+        monthly_ess_cost = ess_demand_charge_total[current_year-2]
         annual_d2g_cost = monthly_d2g_cost * 12
         annual_ess_cost = monthly_ess_cost * 12
-        monthly_EV_charging_revenue = np.cumsum(ev_charging_revenue_total) * 7 * 4
+        annual_ess_costs[current_year - 1] = annual_ess_cost
+        annual_d2g_costs[current_year - 1] = annual_d2g_cost
+        annual_energy_costs[current_year - 1] = annual_energy_cost
+        monthly_EV_charging_revenue = ev_charging_revenue * 7 * 4
         annual_EV_charging_revenue = monthly_EV_charging_revenue * 12
-        annual_EV_charging_revenue_map[year] = annual_EV_charging_revenue
-    yearList = np.arange(0, years)
+        annual_EV_charging_revenue_map[current_year - 1] = annual_EV_charging_revenue
+    yearList = np.arange(1, years+1)
 
     # Compute ROI and Cash flow as a Function of time
     roi_values = []
-    for year in range(years):
-        annual_net_profit = annual_EV_charging_revenue[year] - (annual_energy_cost[year] + annual_ess_cost[year])
+    for year in yearList:
+        annual_net_profit = annual_EV_charging_revenue_map[year] - (annual_energy_costs[year] + annual_ess_costs[year])
         ROI = (annual_net_profit / CAPEX) * 100
         roi_values.append(ROI)
         cash_flow = annual_net_profit - CAPEX
@@ -290,15 +346,15 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
  # Plot cumulative values
     plt.figure(figsize=(12, 5))
     plt.subplot(121)
-    plt.plot(yearList, annual_energy_cost, label="Energy Cost")
-    plt.plot(yearList, annual_d2g_cost, label="Direct to Grid Demand Charge")
-    plt.plot(yearList, annual_ess_cost, label="ESS Demand Charge")
+    plt.plot(yearList, list(annual_energy_costs.values()), label="Energy Cost")
+    plt.plot(yearList, list(annual_d2g_costs.values()), label="Direct to Grid Demand Charge")
+    plt.plot(yearList, list(annual_ess_costs.values()), label="ESS Demand Charge")
     plt.xlabel("Years")
     plt.ylabel("Cumulative Cost ($)")
     plt.legend()
 
     plt.subplot(122)
-    plt.plot(yearList, annual_EV_charging_revenue, label="EV Charging Revenue")
+    plt.plot(yearList, list(annual_EV_charging_revenue_map.values()), label="EV Charging Revenue")
     plt.xlabel("Years")
     plt.ylabel("Cumulative Revenue ($)")
     plt.legend()
@@ -335,26 +391,35 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
     plt.legend()
     # -------- Testing Graphs -----------
 
-    print("Total number of vehicles charged for {0} years is: {1}, average daily cars charged is: {2:.1f}".format(years,int(total_charging_times), total_charging_times/years/12/4/7))
+    print("Total number of vehicles charged for {0} years is: {1}, average daily cars charged is: {2:.1f}".format(years,int(total_charging_times), total_charging_times/(years*12*4*7)))
     print("Number of vehicles charged from the ESS for {0} years is: {1}, average daily cars charged is: {2:.1f}".format(years,ess.ess_charged_vehicles, ess.ess_charged_vehicles/years/12/4/7))
     print("Number of vehicles charged from the grid for {0} years is: {1}, average daily cars charged is: {2:.1f}".format(years,ess.grid_charged_vehicles, ess.grid_charged_vehicles/years/12/4/7))
     print("Cost of ESS and chargers: $", ess.cost)
     print("Energy cost (off peak) " + "for " + str(years) + " years: $ " + str(off_peak_cost_total * 7 * 4 * 12))
     print("Energy cost (mid peak) " + "for " + str(years) + " years: $ " + str(mid_peak_cost_total * 7 * 4 * 12))
     print("Energy cost (on peak) " + "for " + str(years) + " years: $ " + str(on_peak_cost_total * 7 * 4 * 12))
-    print("The AVERAGE annual cost of energy drawn from the grid for {0} years is: $ {1:.2f}".format(years, annual_energy_cost[-1]/years))
-    print("Total cost for 10 years: $ {0:.2f}".format(ess.cost + annual_energy_cost[-1]))
+    print("The AVERAGE annual cost of energy drawn from the grid for {0} years is: $ {1:.2f}".format(years, annual_energy_cost/years))
+    print("Total cost for 10 years: $ {0:.2f}".format(ess.cost + annual_energy_cost))
     print(f"The ROI after {years} years is {roi_values[-1]}%")
 
     plt.show()
-
 simulate_ess(
-    years=int(input("Enter the number of years to simulate: ")),
-    vehicle_increase_percentage=float(input("Enter the vehicle increase percentage per year: ")),
-    vehicle_draw_increase=float(input("Enter the vehicle draw increase per year: ")),
-    energy_cost_increase=float(input("Enter the energy cost increase percentage per year: ")),
-    ev_charging_price_increase=float(input("Enter the EV charging price increase percentage per year: ")),
-    demand_charge_increase=float(input("Enter the demand charge increase percentage per year: ")),
-    demand_charge_start=float(input("Enter the initial demand charge cost in $/kW: ")),
-    price_for_EV_charging=float(input("Enter the price for EV charging in $/kWh: "))
+    years=10,
+    vehicle_increase_percentage=2,
+    vehicle_draw_increase=1,
+    energy_cost_increase=1.5,
+    ev_charging_price_increase=2,
+    demand_charge_increase=1.5,
+    demand_charge_start=25,
+    price_for_EV_charging=0.45
 )
+# simulate_ess(
+#     years=int(input("Enter the number of years to simulate: ")),
+#     vehicle_increase_percentage=float(input("Enter the vehicle increase percentage per year: ")),
+#     vehicle_draw_increase=float(input("Enter the vehicle draw increase per year: ")),
+#     energy_cost_increase=float(input("Enter the energy cost increase percentage per year: ")),
+#     ev_charging_price_increase=float(input("Enter the EV charging price increase percentage per year: ")),
+#     demand_charge_increase=float(input("Enter the demand charge increase percentage per year: ")),
+#     demand_charge_start=float(input("Enter the initial demand charge cost in $/kW: ")),
+#     price_for_EV_charging=float(input("Enter the price for EV charging in $/kWh: "))
+# )
