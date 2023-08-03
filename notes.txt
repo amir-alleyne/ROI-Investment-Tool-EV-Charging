@@ -1,0 +1,1 @@
+- Limitation on charging and keeping track of SOC at each charge. Consider the case where two cars ch
