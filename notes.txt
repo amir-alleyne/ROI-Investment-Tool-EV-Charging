@@ -3,5 +3,5 @@
 
 - double check financial calcs
 - get rid of cumsum for energy costs (make diff annual graphs)
-- test wc inputs
+- test wc inputs (make like 6 cars charge a day)
 - d2g costs vs our system costs (for customers - including utility upgrade costs)
