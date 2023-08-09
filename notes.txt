@@ -1,1 +1,7 @@
 - Limitation on charging and keeping track of SOC at each charge. Consider the case where two cars ch
+
+
+- double check financial calcs
+- get rid of cumsum for energy costs (make diff annual graphs)
+- test wc inputs
+- d2g costs vs our system costs (for customers - including utility upgrade costs)

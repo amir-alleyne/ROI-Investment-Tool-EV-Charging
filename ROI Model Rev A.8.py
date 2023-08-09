@@ -367,6 +367,7 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
 
     #     # Add -CAPEX as the first element in cash_flow_values
     cash_flow_values.insert(0, -CAPEX)
+
     #
     # # Calculate payback period
     # cumulative_cash_flow = np.cumsum(cash_flow_values)
@@ -413,7 +414,7 @@ def simulate_ess(years, vehicle_increase_percentage, vehicle_draw_increase,
     plt.plot(np.arange(0, years+1), cash_flow_values, label="ROI")
     plt.xlabel('Year')
     plt.ylabel('Cash Flow')
-    plt.title('Return on Investment Over Time')
+    plt.title('Cash Flow Over Time')
     plt.grid(False)
     plt.legend()
 
