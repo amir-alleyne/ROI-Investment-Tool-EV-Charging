@@ -1,5 +1,5 @@
 # ROI Sales Tool - Rev A.8
-# Authors: Omri Tayyara and Perry Yi
+# Authors: Amir Alleyne, Omri Tayyara and Perry Yi
 # Date: 6 - 30 - 2023
 
 import matplotlib.pyplot as plt
